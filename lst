@@ -1,0 +1,280 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var manchester_class = ee.Image("users/gsmarshall/urban_greenspace/manchester_class"),
+    manch_composite = ee.Image("users/gsmarshall/urban_greenspace/manch_composite"),
+    bos_sample_results = ee.FeatureCollection("users/gsmarshall/urban_greenspace/bos_sample_results"),
+    nyc_results = ee.FeatureCollection("users/gsmarshall/urban_greenspace/nyc_blockgrp_results"),
+    nyc_tes = ee.FeatureCollection("users/gsmarshall/urban_greenspace/nyc_tes"),
+    nyc_public_housing = ee.FeatureCollection("users/gsmarshall/urban_greenspace/nyc_public_housing");
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+// Debug flags
+var debugLST = false;
+var debug_stats = false;
+var debug_results = true;
+var printLegends = true;
+
+// Define global vars/constants
+var CITY = nyc_results;
+var CITY_CRS = 'EPSG:2263';
+var CITY_GEOM = CITY.geometry();
+var studyarea = CITY_GEOM;
+
+// import tools
+var modules = require('users/gsmarshall/greenspace_app:analysis_modules');
+var legendTools = require('users/gsmarshall/greenspace_app:bivariate_legend');
+var basemap = require('users/gsmarshall/greenspace_app:dark_basemap');
+var zachTools = require('users/jhowarth/studentProjects:lst/lstModules.js');
+
+
+// add custom base map
+var mapStyle = basemap.mapStyle;
+Map.setOptions('mapStyle', {mapStyle: mapStyle});
+
+
+
+// "Urban heat island severity" not defined by TES, but defined elsewhere as the difference above citywide mean classified by Jenks breaks
+
+// scaling code from EE dataset page for Landsat 8 https://developers.google.com/earth-engine/datasets/catalog/LANDSAT_LC08_C02_T1_L2#description
+// Applies scaling factors.
+function applyScaleFactors(image) {
+  var opticalBands = ee.Image(image).select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = ee.Image(image).select('ST_B.*').multiply(0.00341802).add(149.0);
+  return ee.Image(image).addBands(opticalBands, null, true)
+              .addBands(thermalBands, null, true);
+}
+
+// load summer LST 
+function loadLST(){
+
+  var LST = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+    .filterBounds(CITY_GEOM)
+    .filter(ee.Filter.calendarRange(2016, 2020, 'year'))
+    .filter(ee.Filter.calendarRange(6, 8, 'month'))
+    .map(applyScaleFactors);
+
+  var max = LST.select('ST_B10').max();
+  var maxLST = max.expression(
+    '((ST_B10 - 273.15)*1.8)+32', {
+      'ST_B10': max.select('ST_B10')
+  }).rename('LST');
+  
+  if(debugLST){print(maxLST);}
+  return maxLST.clip(studyarea);
+}
+var LST = loadLST();
+
+// Compare Zach's LST data (from Sophia Ermida) with mine (from GEE)
+var zachLST = zachTools.loadLST_2016to2020_max(CITY_GEOM.centroid());
+var lstDiff = LST.subtract(zachLST);
+
+// calculate stats in order to make classified map
+// side note for future reference: can't write functions using 'this' because that would require extending ee built in types (like ee.Image)
+// this could maybe be done outside of the code editor? but probably isn't useful here
+function imageStats(image, scale, band){
+  // returns dict containing max, min, and mean of selected image band
+  var max = image.reduceRegion({
+    reducer: ee.Reducer.max(),
+    geometry: CITY_GEOM,
+    scale: scale,
+    crs: CITY_CRS,
+    maxPixels: 100000000,
+    bestEffort: true
+  }).get(band);
+
+  var min = image.reduceRegion({
+    reducer: ee.Reducer.min(),
+    geometry: CITY_GEOM,
+    scale: scale,
+    crs: CITY_CRS,
+    maxPixels: 100000000,
+    bestEffort: true
+  }).get(band);
+
+  var mean = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: CITY_GEOM,
+    scale: scale,
+    crs: CITY_CRS,
+    maxPixels: 100000000,
+    bestEffort: true
+  }).get(band);
+    
+  var median = image.reduceRegion({
+    reducer: ee.Reducer.median(),
+    geometry: CITY_GEOM,
+    scale: scale,
+    crs: CITY_CRS,
+    maxPixels: 100000000,
+    bestEffort: true
+  }).get(band);
+  
+  return {
+    amin: min,
+    amax: max,
+    amean: mean,
+    amedian: median
+  };
+}
+
+var lst_stats = imageStats(LST, 30, 'LST');
+if(debug_stats){
+  print('lst_stats', lst_stats);
+  print('Difference between LST Sources Summary Stats', imageStats(lstDiff, 30, 'LST'));
+}
+
+var min = lst_stats.amin;
+var max = lst_stats.amax;
+
+// *********************** LST Visualization ************************
+// visualization borrowed from Zach Levitt
+var lstPalette = ['#005b7b','#3897bc','#77b1c7','#b4c6cd','#ddb588','#f19a3f','#d6721f','#b13b03','#750401'];
+var lstVis = {
+  // min and max hardcoded for NYC to speed up rendering, but can adjust using getInfo()
+	min: 80, // lst_stats.amin.getInfo(), 
+	max: 155, // lst_stats.amax.getInfo(),
+	palette: lstPalette
+};
+
+var diffVis = {
+  min: -1,
+  max: 17,
+  palette: lstPalette
+};
+
+var ndvi_vis = {
+  bands: 'NDVI_max',
+  min: 0, 
+  max: 1, 
+  palette: ['#ffffe5','#f7fcb9','#d9f0a3','#addd8e','#78c679','#41ab5d','#238443','#006837','#004529']
+};
+
+
+Map.centerObject(studyarea, 12);
+Map.addLayer(LST, lstVis, 'Surface Temp (F)', 0);
+Map.addLayer(zachLST, lstVis, 'LST from Sophia Ermida', 0);
+Map.addLayer(lstDiff, diffVis, 'Difference between LST Sources: diff = GEE - Sophia Ermida', 0);
+
+
+
+// ******************** Bivariate map by block group using % canopy cover ***********************
+
+
+var temp_breaks = modules.medianBreaks(CITY, 'mean');
+var lst_norm_breaks = modules.medianBreaks(CITY, 'lst_norm');
+var canopy_breaks = modules.medianBreaks(CITY, 'est_coverage');
+var city_class = CITY.map(modules.reclass_collection('est_coverage', canopy_breaks.low, canopy_breaks.high, 'mean', temp_breaks.low, temp_breaks.high, 'temp_canopy'));
+// print and visualize results
+if(debug_results){print('Results with Bivariate Class', nyc_results.first());}
+//var lst_tree_palette = ['#d0d0d0', '#AFE4E4', '#63C8C9', '#DDB0D9', '#A5ACD7', '#5A97BC', '#BB63B1', '#8A61AF', '#3B4799'];
+var lst_tree_palette = ['#F3F3F3', '#C2F0CE', '#8AE1AE', '#EAC5DD', '#9EC5D3', '#7EC5B1', '#E6A2D0', '#BB9FCE', '#7A8EAE'];
+var tes_palette = ['#F59E40', '#E5A24A','#D7A653','#C7A95C','#BAAD64','#ACB16D','#A4B373','#94B77D', '#8ABA83', '#7FBD89', '#70C093'];
+
+var bivar_collection_vis = {
+  min: 0,
+  max: 8,
+  palette: lst_tree_palette
+};
+
+var canopy_class_vis = {
+  min: 0, 
+  max: 2,
+  palette: [lst_tree_palette[0], lst_tree_palette[1], lst_tree_palette[2]]
+};
+
+var temp_class_vis = {
+  min: 0, 
+  max: 2,
+  palette: [lst_tree_palette[0], lst_tree_palette[3], lst_tree_palette[6]]
+};
+
+
+var city_styled = city_class.map(modules.styleFeatures('temp_canopy', '444444aa', 0.15, lst_tree_palette))
+                            .map(modules.styleFeatures('mean_class', '444444aa', 0.15, temp_class_vis.palette))
+                            .map(modules.styleFeatures('est_coverage_class', '444444aa', 0.15, canopy_class_vis.palette));
+var nyc_tes_styled = nyc_tes.map(modules.styleContinuous('tes', '444444aa', 0.15, tes_palette, 30, 100));
+
+Map.addLayer(city_styled.style({styleProperty: 'mean_class_style'}), {}, 'Classified LST',0);
+Map.addLayer(city_styled.style({styleProperty: 'est_coverage_class_style'}), {}, 'Classified Canopy Cover',0);
+Map.addLayer(city_styled.style({styleProperty: 'temp_canopy_style'}), {}, 'Canopy Cover and LST',0);
+Map.addLayer(nyc_tes_styled.style({styleProperty: 'tes_style'}), {}, 'Original Tree Equity Score', 0);
+
+// add Legends
+var lstLegend = zachTools.makeGradientLegend(lstVis, "Land Surface Temp");
+var diffLegend = zachTools.makeGradientLegend(diffVis, "Difference between LST Sources");
+
+var legend = legendTools.bivarLegend("LST and Canopy Cover", lst_tree_palette, '% Canopy Cover', 'Mean LST', 'top-left');
+Map.add(legend);
+var tesLegend = zachTools.makeGradientLegend({palette: tes_palette, min: 30, max: 100}, "Tree Equity Score");
+tesLegend.style().set('position', 'top-right');
+Map.add(tesLegend);
+
+if(printLegends){
+  print(lstLegend);
+  print(diffLegend);
+}
+
+
+// ********************** Bivariate: LST and Race, LST and Income ***********************
+var nonwhite_breaks = modules.medianBreaks(nyc_results, 'nonwhite');
+var income_breaks = modules.medianBreaks(nyc_results, 'low_income');
+
+var nyc_temp = nyc_results.map(modules.reclass_collection(
+                            'nonwhite', nonwhite_breaks.low, nonwhite_breaks.high, 
+                            'mean', temp_breaks.low, temp_breaks.high, 'nonwhite_temp'))
+                          .map(modules.reclass_collection(
+                            'low_income', income_breaks.low, income_breaks.high, 
+                            'mean', temp_breaks.low, temp_breaks.high, 'low_income_temp'))
+                          .map(modules.reclass_collection(
+                            'est_coverage', canopy_breaks.low, canopy_breaks.high,
+                            'low_income', income_breaks.low, income_breaks.high, 'canopy_income'
+                            ))
+                          .map(modules.reclass_collection(
+                            'nonwhite', nonwhite_breaks.low, nonwhite_breaks.high, 
+                            'lst_norm', lst_norm_breaks.low, lst_norm_breaks.high, 'nonwhite_lst_norm'));
+    
+var race_income_palette = ['#E8E8E8', '#AFE4E4', '#63C8C9', '#DDB0D9', '#A5ACD7', '#5A97BC', '#BB63B1', '#8A61AF', '#3B4799'];
+
+var med_income_vis = {
+  min: 6400,
+  max: 250500,
+  palette: ['#edf8fb','#bfd3e6','#9ebcda','#8c96c6','#8c6bb1','#88419d','#6e016b']
+};
+
+var pop_density_vis = {
+  min: 0,
+  max: 80000,
+  palette: ['#edf8fb','#bfd3e6','#9ebcda','#8c96c6','#8c6bb1','#88419d','#6e016b']
+};
+
+var city_styled2 = nyc_temp.map(modules.styleFeatures('nonwhite_temp', '444444aa', 0.15, race_income_palette))
+                           .map(modules.styleFeatures('low_income_temp', '444444aa', 0.15, race_income_palette))
+                           .map(modules.styleFeatures('canopy_income', '444444aa', 0.15, lst_tree_palette))
+                           .map(modules.styleFeatures('lst_norm_class', '444444aa', 0.15, temp_class_vis.palette))
+                           .map(modules.styleContinuous('B19013_001', '444444aa', 0.15, med_income_vis.palette, 6400, 250500))
+                           // B19013_001 is median household income - renaming columns is a pain in GEE (maybe write an export function for it...)
+                           .map(modules.addPopDensity)
+                          .map(modules.styleContinuous('pop_density', '444444aa', 0.15, pop_density_vis.palette, 0, 90000)); // B01001_001 is total population
+
+
+Map.addLayer(city_styled2.style({styleProperty: 'nonwhite_temp_style'}), {}, 'Nonwhite Population and LST',0);
+Map.addLayer(city_styled2.style({styleProperty: 'low_income_temp_style'}), {}, 'Low Income Population and LST',0);
+Map.addLayer(city_styled2.style({styleProperty: 'canopy_income_style'}), {}, 'Canopy Cover and Low Income Population',0);
+Map.addLayer(city_styled2.style({styleProperty: 'B19013_001_style'}), {}, 'Median Household Income',0);
+Map.addLayer(city_styled2.style({styleProperty: 'pop_density_style'}), {}, 'Population Density',0);
+Map.addLayer(city_styled2.style({styleProperty: 'lst_norm_class_style'}), {}, 'LST_norm',0);
+
+Map.addLayer(nyc_public_housing.draw({color: '666666', strokeWidth: 2}), {}, 'Public Housing projects', 0, 0.8);
+
+var lst_nw_legend = legendTools.bivarLegend("Nonwhite Population and LST", race_income_palette, '% Nonwhite Population', 'Mean LST', 'top-left');
+var lst_li_legend = legendTools.bivarLegend("Low Income Population and LST", race_income_palette, '% Low Income Population', 'Mean LST', 'top-left');
+var canopy_income_legend = legendTools.bivarLegend("Canopy Cover and Low Income Population", lst_tree_palette, '% Canopy Cover', '% Low Income Population', 'top-left');
+
+var med_income_legend= zachTools.makeGradientLegend(med_income_vis, "Median Household Income");
+med_income_legend.style().set('position', 'top-right');
+var pop_density_legend= zachTools.makeGradientLegend(pop_density_vis, "Population Density (people/km^2)");
+pop_density_legend.style().set('position', 'top-right');
+
+Map.add(lst_li_legend);
+Map.add(lst_nw_legend);
+Map.add(canopy_income_legend);
+Map.add(med_income_legend);
+Map.add(pop_density_legend);

@@ -1,0 +1,400 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var greater_manch = 
+    /* color: #ffc82d */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[-71.5465120994114, 43.03752397681783],
+          [-71.5465120994114, 42.90362882283206],
+          [-71.36798426738015, 42.90362882283206],
+          [-71.36798426738015, 43.03752397681783]]], null, false),
+    classparams = {"opacity":1,"bands":["classification"],"min":1,"max":6,"palette":["33a02c","b2df8a","d20606","6b6687","ffeca5","2b32ff"]},
+    tree_equity_nh = ee.FeatureCollection("users/gsmarshall/urban_greenspace/tree_equity_nh"),
+    manch_composite = ee.Image("users/gsmarshall/urban_greenspace/manch_composite");
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+var NYC_CRS = 'EPSG: 2263';
+
+
+// ************************* Preprocessing **********************
+
+// filter by images with 4 bands and calculates NDVI
+// returns null if image has less than 4 bands, returns image plus ndvi band for valid 4 band images
+var band_filter = function(image){
+  return ee.Algorithms.If(image.bandNames().length().eq(4), image.addBands(image.normalizedDifference(['N', 'R']).rename('NDVI')), null);
+};
+
+
+// returns composite image of all 4-band naip tiles within the study area
+exports.preprocess = function(study_area){
+  //buffer_dist = manchester.bounds().coordinates();
+  
+  // mapping over featurecollection is slower than filtering, but I haven't been able to get filtering by bands to work
+  var naip_4band = ee.ImageCollection('USDA/NAIP/DOQQ').filterBounds(study_area).map(band_filter, true);
+
+  // forms a composite image based on several measures from all images in the collection - not sure how these composites will figure in the
+  // classification but we'll keep them for now
+  var composite = naip_4band.reduce(ee.Reducer.max())
+                .addBands(naip_4band.reduce(ee.Reducer.mean()))   // include a mean reducer
+                .addBands(naip_4band.reduce(ee.Reducer.percentile([20])))// include a 20th percentile reducer
+                .addBands(naip_4band.reduce(ee.Reducer.stdDev()))// include a standard deviation reducer
+                .float();
+                
+  return composite.clip(study_area);
+};
+
+
+
+// **************************** Classification ************************
+
+var createClassifier = function(training_pts){
+  var bands = manch_composite.bandNames();
+
+  // Collecting values of the pixels that correspond to our manualy collected
+  // training points
+  var training = manch_composite.select(bands).sampleRegions({
+            collection: training_pts,
+            properties: ['Class'],
+            scale: 1,
+            geometries: true
+            });
+  // print("training data", training);
+  // Map.addLayer(manch_composite, visParamsMax, "composite training image");
+  // Map.addLayer(training_pts, {color: '#00FF00'}, 'raw training pts');
+  // Map.addLayer(training, {color: '#00FF00'}, 'image training pts');
+
+            
+  // parameters for a classifier
+  var classifier = ee.Classifier.smileRandomForest({
+              numberOfTrees: 300,
+              //variablesPerSplit: 0,
+              minLeafPopulation: 1,
+              bagFraction: 0.5,
+              //outOfBagMode: true,
+              seed: 0
+                  });
+                  
+
+  // Trained with 70% of our data.
+  return classifier.train(training, 'Class', bands);
+};
+
+// classification function with EE random forest classifier
+exports.addClass = function(classifimage, training_pts){
+            
+  var trainedClassifier = createClassifier(training_pts);
+  
+  // Return the classified image
+  return classifimage.select(classifimage.bandNames()).classify(trainedClassifier);
+};
+
+
+
+// ***************************** Census Analysis *******************************
+
+// ************************************ join health data **************************************
+
+// trying to preserve features without matches in health data, but dealing with nulls is very difficult
+// ultimately, probably not worth it since keeping those features would mean that their score is calculated with incomplete data
+// var priority_health = priority.map(addTractID);
+// var health_select = health_data.select(['tractfips','phlth_crud', 'mhlth_crud', 'casthma_cr', 'chd_crudep'], ['tractfips', 'phys_hlth', 'ment_hlth', 'asthma', 'chd']);
+// var filter = ee.Filter.equals({leftField: 'tract_id', rightField: 'tractfips'});
+// var health_indicators = ee.Join.saveAll({matchesKey: 'primary', outer: true}).apply(priority_health, health_select, filter);
+var addTractID = function(feature){
+  var tractID = feature.getString('GEOID').slice(0, 11);
+  return feature.set({tract_id: tractID});
+};
+
+// combine columns from joined feature into a single feature
+var cleanJoin = function(feature){
+  return ee.Feature(feature.get('primary')).copyProperties(feature.get('secondary'));
+};
+
+exports.joinHealthData = function(census, health, print_feature_counts){
+  if(print_feature_counts){
+    print('Pre-join health data features', health.aggregate_count('tractfips'));
+    print('Number of census features before join', census.aggregate_count('GEOID'));
+  }
+
+  // need to join health data to census data - first 11 characters of geoid represent tract id
+  // first extract tract fips code from block group geoid
+  var priority_places_health = census.map(addTractID);
+  
+  var health_select = health.select(['tractfips','phlth_crud', 'mhlth_crud', 'casthma_cr', 'chd_crudep'], ['tractfips', 'phys_hlth', 'ment_hlth', 'asthma', 'chd']);
+  var filter = ee.Filter.equals({leftField: 'tract_id', rightField: 'tractfips'});
+  var health_indicators = ee.Join.inner('primary', 'secondary').apply(priority_places_health, health_select, filter).map(cleanJoin);
+  
+  if(print_feature_counts){
+    print('Number of census features after join', health_indicators.aggregate_count('GEOID'));
+  }
+  return health_indicators;
+};
+
+// removes block groups with a population of 0 from the collection
+exports.filterByPop = function(featurecollection){
+  var popfilter = ee.Filter.neq('B01001_001', 0);
+  return featurecollection.filter(popfilter);
+};
+
+{
+// **************** splitting input places list would happen in analysis code, not as module *********
+}
+
+
+// ******************************* Land Surface Temperature ********************************
+
+// scaling code from EE dataset page for Landsat 8 https://developers.google.com/earth-engine/datasets/catalog/LANDSAT_LC08_C02_T1_L2#description
+// Applies scaling factors.
+function applyScaleFactors(image) {
+  var opticalBands = ee.Image(image).select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = ee.Image(image).select('ST_B.*').multiply(0.00341802).add(149.0);
+  return ee.Image(image).addBands(opticalBands, null, true)
+              .addBands(thermalBands, null, true);
+}
+
+exports.addLST = function(featurecollection){
+  var studyarea = ee.FeatureCollection(featurecollection).geometry();
+  var date_start = '2016-06-01';
+  var date_end = '2020-08-31';
+  var satellite = 'L8';
+  
+  var lst2016 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").filterDate('2016-06-01', '2016-08-31').filterBounds(studyarea);
+  var lst2017 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").filterDate('2017-06-01', '2017-08-31').filterBounds(studyarea);
+  var lst2018 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").filterDate('2018-06-01', '2018-08-31').filterBounds(studyarea);
+  var lst2019 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").filterDate('2019-06-01', '2019-08-31').filterBounds(studyarea);
+  var lst2020 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").filterDate('2020-06-01', '2020-08-31').filterBounds(studyarea);
+  
+  var LST = lst2020.merge(lst2019).merge(lst2018).merge(lst2017).merge(lst2016).map(applyScaleFactors);
+  var max = LST.select('ST_B10').max();
+  var maxLST = max.expression(
+    '((ST_B10 - 273.15)*1.8)+32', {
+      'ST_B10': max.select('ST_B10')
+  }).rename('LST').clip(studyarea);
+  
+  var meanLST = maxLST.reduceRegions({
+    collection: featurecollection,
+    reducer: ee.Reducer.mean(),
+    scale: 30,
+    crs: NYC_CRS
+  });
+  
+  return meanLST;
+};
+
+// load summer LST 
+exports.loadLST = function(studyarea){
+
+  var LST = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+    .filterBounds(studyarea)
+    .filter(ee.Filter.calendarRange(2016, 2020, 'year'))
+    .filter(ee.Filter.calendarRange(6, 8, 'month'))
+    .map(applyScaleFactors);
+
+  var max = LST.select('ST_B10').max();
+  var maxLST = max.expression(
+    '((ST_B10 - 273.15)*1.8)+32', {
+      'ST_B10': max.select('ST_B10')
+  }).rename('LST');
+  
+  return maxLST.clip(studyarea);
+};
+
+
+// *********************** calculate census priority indicators ************************
+// need to do all the field calculations feature by feature and map over the collection
+exports.addLowIncomePct = function(feature){
+    // print("Adding low income");
+    return feature.set({low_income: feature.getNumber('C17002_001').subtract(feature.getNumber('C17002_008')).divide(feature.getNumber('C17002_001'))});
+};
+
+exports.addNonWhitePct = function(feature){
+  // print("Adding nonwhite");
+  return feature.set({nonwhite: feature.getNumber('B03002_001').subtract(feature.getNumber('B03002_003')).divide(feature.getNumber('B03002_001'))});
+};
+
+
+exports.addUnemploymentPct = function(feature){
+  return feature.set({unemployed_pct: feature.getNumber('B23025_005').divide(feature.getNumber('B23025_002'))});
+  // return feature.set({unemployed_pct: feature.getNumber('B23025_006').divide(feature.getNumber('B23025_001'))});
+
+};
+
+
+// add age variables - percent seniors, percent children, dependency ratio
+exports.addDepRatio = function(feature){
+    // print("Adding dep ratio");
+  // total population
+  var pop = feature.getNumber('B01001_001');
+  
+  // separate out the sums to make it a bit easier to read
+  var seniorsM = feature.getNumber('B01001_020').add(feature.getNumber('B01001_021'))
+    .add(feature.getNumber('B01001_022'))
+    .add(feature.getNumber('B01001_023'))
+    .add(feature.getNumber('B01001_024'))
+    .add(feature.getNumber('B01001_025'));
+    
+  var seniorsW = feature.getNumber('B01001_044').add(feature.getNumber('B01001_045'))
+    .add(feature.getNumber('B01001_046'))
+    .add(feature.getNumber('B01001_047'))
+    .add(feature.getNumber('B01001_048'))
+    .add(feature.getNumber('B01001_049'));
+  // total number of seniors
+  var seniors = seniorsM.add(seniorsW);
+    
+  // separate out the sums to make it a bit easier to read
+  var childM = feature.getNumber('B01001_003').add(feature.getNumber('B01001_004'))
+    .add(feature.getNumber('B01001_005'))
+    .add(feature.getNumber('B01001_006'));
+    
+  var childW = feature.getNumber('B01001_027').add(feature.getNumber('B01001_028'))
+    .add(feature.getNumber('B01001_029'))
+    .add(feature.getNumber('B01001_030'));
+  // total number of children
+  var children = childM.add(childW);
+  
+  return feature.set({
+    seniors_pct: seniors.divide(pop),
+    child_pct: children.divide(pop),
+    // dependency ratio = (children + seniors)/(pop age 18-64) = (children + seniors)/(total pop - (children + seniors))
+    dep_ratio: children.add(seniors).divide(pop.subtract(children.add(seniors)))});
+};
+
+
+// *************************** calculate tree cover and gap *********************************************
+// do zonal stats by sample regions -> field calculator
+// specify projection as NAD83/New Hampshire
+// need to change the projection based on what state the place is in
+// the NH projection, which is based on a transverse Mercator, should be good enough for now
+
+
+// canopy goal for all areas in this analysis is 0.4, so the goal values are constant and could be hardcoded, but for the 
+// sake of clarity and consistency with TES workflow it is treated as a constant that could change in different instances of the analysis
+var canopy_goal = 0.4;
+var pixel_area = 16;
+
+exports.setGap = function(feature){
+  // compute existing canopy cover
+  var canopy = ee.Feature(feature).getNumber('sum').multiply(pixel_area);
+  var est_coverage = canopy.divide(ee.Feature(feature).area());
+  
+  // compute canopy cover goal
+  var pop = feature.getNumber('B01001_001');
+  var density = pop.divide(ee.Feature(feature).area().divide(1000000)); // convert area from m^2 to km^2
+  var goal = 1.2 * canopy_goal;
+  // set canopy cover goal - values are from tree equity score methodology
+  // using ee.algorithm.if because logical operators don't work reliably with EE server side parallelization
+  goal = ee.Algorithms.If(density.gt(2000), 1.0 * canopy_goal, goal);
+  goal = ee.Algorithms.If(density.gt(4000), 0.8 * canopy_goal, goal);
+  goal = ee.Algorithms.If(density.gt(8000), 0.5 * canopy_goal, goal);
+
+  var gap = ee.Number(goal).subtract(est_coverage);
+  // set gap to 0 if it is negative
+  gap = ee.Algorithms.If(gap.lt(0), 0.0, gap);
+  
+  return feature.set({pop_density: density, est_coverage: est_coverage, goal: goal, gap: gap});
+};
+
+// helper function to normalize a score value between its min and max
+var normalize = function(x, min, max){
+  return ee.Number(x).subtract(ee.Number(min)).divide(ee.Number(max).subtract(ee.Number(min)));
+};
+exports.normalize = normalize;
+
+// ****************************** Bivariate mapping tools ****************************
+
+// given a set of parameters defining how to visualize the featurecollection, sets a style dictionary for each feature
+// this dictionary is added as a field accessible under the name style_label
+exports.styleFeatures = function(stylevar, color, width, palette){
+    var wrap = function(feature){
+      var index = feature.getNumber(stylevar);
+      var style_label = ee.String(stylevar + '_style');
+      
+      return feature.set(style_label, {color: color, width: width, fillColor: ee.List(palette).get(index)});
+  };
+  return wrap;
+};
+
+exports.styleContinuous = function(stylevar, color, width, visparams){
+    var wrap = function(feature){
+      var value = feature.getNumber(stylevar);
+      var lastIndex = ee.List(visparams.palette).size().subtract(1);
+      // convert value in range [min, max] to palette index in range [0, palette.length-1]
+      var index = ee.Algorithms.If(value.gt(visparams.max), lastIndex, normalize(value, visparams.min, visparams.max).multiply(lastIndex).round());
+      index = ee.Algorithms.If(value.lt(visparams.min), 0, index);
+      index = ee.Algorithms.If(value, index, -1);
+
+      var style_label = ee.String(stylevar + '_style');
+      // if nodata, set color to fully transparent
+      var fillColor = ee.Algorithms.If(ee.Number(index).neq(-1), ee.List(visparams.palette).get(index), '888888dd');
+      
+      return feature.set(style_label, {color: color, width: width, fillColor: fillColor});
+  };
+  return wrap;
+};
+
+
+// mapped function: assigns each feature to a one of three classes based on a given variable and interval breaks for that variable
+exports.reclass_collection = function(var1, low1, high1, var2, low2, high2, outputName){
+  var wrap = function(feature){
+    var var_a = ee.Number(feature.getNumber(var1));
+    var var_b = ee.Number(feature.getNumber(var2));
+    
+    var class_a = 0;
+    class_a = ee.Algorithms.If(var_a.gt(low1), 1, class_a);
+    class_a = ee.Algorithms.If(var_a.gt(high1), 2, class_a);
+    var a_label = ee.String(var1 + '_class');
+    
+    var class_b = 0;
+    class_b = ee.Algorithms.If(var_b.gt(low2), 10, class_b);
+    class_b = ee.Algorithms.If(var_b.gt(high2), 20, class_b);
+    var b_label = ee.String(var2 + '_class');
+
+
+    var bivariate = ee.Number(class_a).add(class_b);
+    bivariate = ee.Number.expression('(class == 10) ? 3 : (class == 11) ? 4 : (class == 12) ? 5 : (class == 20) ? 6 : (class == 21) ? 7 : (class == 22) ? 8 : class', 
+    {'class': bivariate});
+
+    return feature.set(outputName, bivariate, a_label, class_a, b_label, ee.Number(class_b).divide(10));
+  };
+  return wrap;
+};
+
+// Constructs three-class bins by defining a 'middle' class as the median +-10% of the data range and defining other classes as
+// anything above or below
+// returns a dictionary specifying the low and high cutoffs for the middle bin
+exports.medianBreaks = function(featurecollection, variable){
+  var max = featurecollection.aggregate_max(variable);
+  var min = featurecollection.aggregate_min(variable);
+  var median = featurecollection.reduceColumns({
+    reducer: ee.Reducer.median(),
+    selectors: [variable]
+  }).get('median');
+  
+  var interval = ee.Number(max).subtract(min).divide(10.0);
+  var low = ee.Number(median).subtract(interval);
+  var high = ee.Number(median).add(interval);
+  
+  return {low: low, high: high};
+};
+
+// Constructs three-class bins by dividing the data range into three equal intervals
+exports.intervalBreaks = function(featurecollection, variable){
+  var max = featurecollection.aggregate_max(variable);
+  var min = featurecollection.aggregate_min(variable);
+
+  var interval = ee.Number(max).subtract(ee.Number(min)).divide(3);
+  return {
+    low: ee.Number(min).add(interval),
+    high: ee.Number(min).add(interval).add(interval)
+  };
+};
+
+// calculates population density in people per km^2
+exports.addPopDensity = function(feature){
+  var pop = feature.getNumber('B01001_001');
+  var density = pop.divide(feature.getNumber('ALAND').divide(1000000));
+  return feature.set({pop_density: density});
+};

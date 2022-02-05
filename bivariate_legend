@@ -1,0 +1,255 @@
+// Bivariate map legend
+// Given a 9-class color palette and labels for the legend title and variables, returns a 3x3 legend
+
+
+// Creates and styles 1 row of the legend.
+var makeRow = function(label, color1, color2, color3) {
+ 
+  // Create the label that is actually the colored box.
+  var colorBox1 = ui.Label({
+    style: {
+      backgroundColor: color1,
+      // Use padding to give the box height and width.
+      padding: '10px',
+      margin: '-1px -1px -1px -1px'
+    }
+  });
+  
+  var colorBox2 = ui.Label({
+    style: {
+      backgroundColor: color2,
+      // Use padding to give the box height and width.
+      padding: '10px',
+      margin: '-1px -1px -1px -1px'
+    }
+  });
+  
+  var colorBox3 = ui.Label({
+    style: {
+      backgroundColor: color3,
+      // Use padding to give the box height and width.
+      padding: '10px',
+      margin: '-1px -1px -1px -1px'
+    }
+  });
+
+  // Create the label filled with the description text
+  // note: can control white space by setting blank labels with a fixed 'width' and 'stretch' properties
+  var description = ui.Label({
+    value: label,
+    style: {
+      margin: '0px 2px 0 0px',
+      //padding: '3px',
+      fontSize: '11px',
+      width: '25px',
+      height: '19px',
+      stretch: 'both',
+      textAlign: 'center'
+    }
+  });
+
+  // return the panel
+  return ui.Panel({
+    widgets: [description, colorBox1, colorBox2, colorBox3],
+    layout: ui.Panel.Layout.flow('horizontal')
+  });
+};
+
+
+function colorGrid(palette){
+  var names = ['High','','Low'];
+  // set position of panel
+  var color_grid = ui.Panel({
+    style: {
+      position: 'top-left',
+      padding: '0',
+      margin: '4px 0 0 0',
+      // stretch: 'both'
+    },
+    layout: ui.Panel.Layout.flow('vertical')
+  });
+  // Add colors
+  for (var i = 0; i < 3; i++) {
+    color_grid.add(makeRow(names[i], palette[3*(3-i)-3], palette[3*(3-i)-2], palette[3*(3-i)-1]));
+  }
+  return color_grid.add(bottomRow());
+}
+
+function bottomRow(){
+  var magnitude = ui.Panel({
+    style: {
+      position: 'top-left',
+      padding: '0',
+      margin: '0 0 0 0'
+    },
+    layout: ui.Panel.Layout.flow('horizontal')
+  });
+  // Create the label filled with the description text.
+  var low = ui.Label({
+    value: 'Low',
+    style: {
+      margin: '2px 0 0 2px',
+      fontSize: '11px'
+    }
+  });
+  // Create the label filled with the description text.
+  var blank = ui.Label({
+    value: '',
+    style: {
+      padding: '0px',
+      margin: '0',
+      width: '23px',
+      stretch: 'horizontal'
+    }
+  });
+  var blank2 = ui.Label({
+    value: '',
+    style: {
+      padding: '0',
+      margin: '0',
+      width: '18px',
+      stretch: 'horizontal'
+    }
+  });
+  // Create the label filled with the description text.
+  var high = ui.Label({
+    value: 'High',
+    style: {
+      margin: '2px 0 0 0px',
+      fontSize: '11px'
+    }
+  });
+  
+  return magnitude.add(blank).add(low).add(blank2).add(high);
+}
+
+
+
+exports.bivarLegend = function(title, palette, var1, var2, position){
+  // set position of panel
+  var legend = ui.Panel({
+    style: {
+      position: position,
+      padding: '8px 15px',
+      minWidth: '190px',
+      minHeight: '190px'
+    },
+    //layout: ui.Panel.Layout.absolute()
+  });
+  
+  var color_w_labels = ui.Panel({
+    style: {
+      position: 'middle-left',
+      padding: '0',
+      margin: '0',
+      width: '150px',
+      height: '80px',
+      stretch: 'both',
+      // border: '1px solid black'
+    },
+    layout: ui.Panel.Layout.flow('horizontal')
+  });
+   
+  // Create legend title
+  var legendTitle = ui.Label({
+    value: title,
+    style: {
+      fontWeight: 'bold',
+      fontSize: '18px',
+      margin: '4px 0 4px 0',
+      padding: '0',
+      position: 'top-left',
+      width: '170px',
+      whiteSpace: 'wrap'
+      }
+  });
+  
+  var label1 = ui.Label({
+    value: var1,
+    style: {
+      fontWeight: 'bold',
+      fontSize: '13px',
+      margin: ' 0 0px 0 0px',
+      padding: '0',
+      textAlign: 'center',
+      width: '95px',
+      height: '30px',
+      stretch: 'horizontal',
+      position: 'bottom-left',
+      color: palette[2]
+    }
+  });
+  
+  var label2 = ui.Label({
+    value: var2,
+    style: {
+      fontWeight: 'bold',
+      fontSize: '13px',
+      margin: '0 0px 0 2px',
+      padding: '0',
+      textAlign: 'center',
+      height: '70px',
+      minWidth: '50px',
+      stretch: 'both',
+      position: 'top-center',
+      color: palette[6],
+      whiteSpace: 'normal'
+    }
+  });
+  
+  var blank = ui.Label({
+    value: '',
+    style: {
+      padding: '0px',
+      margin: '0',
+      width: '23px',
+      stretch: 'horizontal'
+    }
+  });
+
+  // Add the title to the panel
+  legend.add(legendTitle);
+  
+  color_w_labels.add(colorGrid(palette));
+  color_w_labels.add(label2);
+  
+  legend.add(color_w_labels);
+  legend.add(label1);
+
+  // add legend to map (alternatively you can also print the legend to the console)
+  return legend;
+};
+
+
+exports.singleVarLegend = function(title, palette, position){
+  // set position of panel
+  var legend = ui.Panel({
+    style: {
+      position: position,
+      padding: '8px 15px'
+    },
+  });
+    // Create legend title
+  var legendTitle = ui.Label({
+    value: title,
+    style: {
+      fontWeight: 'bold',
+      fontSize: '15px',
+      margin: '4px 0 4px 0',
+      padding: '0',
+      }
+  });
+  // use functions from bivariate legend to make single variable legend
+  var color_bar = makeRow('', palette[0], palette[1], palette[2]);
+  var labels = bottomRow();
+  // remove first widget in each element to eliminate unnecessary white space
+  color_bar.add(color_bar.widgets().get(0)); // adding this widget back on is a lazy way to help control vertical spacing
+  color_bar.remove(color_bar.widgets().get(0));
+  labels.remove(labels.widgets().get(0));
+  
+  return legend.add(legendTitle).add(color_bar).add(labels);
+};
+
+
+var palette =['#E8E8E8', '#AFE4E4', '#63C8C9', '#DDB0D9', '#A5ACD7', '#5A97BC', '#BB63B1', '#8A61AF', '#3B4799'];
+//Map.add(makeLegend("Canopy Cover and Nonwhite Population", palette, '% Canopy Cover', '% Nonwhite Population'));

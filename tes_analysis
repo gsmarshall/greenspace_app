@@ -1,0 +1,276 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var trainingPartition = ee.FeatureCollection("users/gsmarshall/urban_greenspace/manch_training_pts"),
+    nyc_landcover = ee.Image("users/gsmarshall/urban_greenspace/landcover_2010_nyc_3ft"),
+    nyc_blockgrp_indicators = ee.FeatureCollection("users/gsmarshall/urban_greenspace/nyc_blockgrp_indicators"),
+    nyc_health = ee.FeatureCollection("users/gsmarshall/urban_greenspace/health_indicators_nyc"),
+    ne_health = ee.FeatureCollection("users/gsmarshall/urban_greenspace/ne_health_indicators"),
+    ne_census = ee.FeatureCollection("users/gsmarshall/urban_greenspace/ne_indicators_places");
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+var print_places = false;
+
+// ********************** implement analysis for place region *********************
+// import modules
+var modules = require('users/gsmarshall/greenspace_app:analysis_modules');
+
+print(nyc_landcover);
+print(nyc_blockgrp_indicators.first());
+
+// ********************* split input feature collection by place area ******************
+
+
+var priority_places_health = modules.joinHealthData(ne_census, ne_health, false);
+// create list of unique place names - should be 446 place areas in study region of NE + NY
+// file starts off with ~773 features, but it seems there are some duplicates - will check later
+var place_names = priority_places_health.aggregate_array('p_GEOID').distinct();
+if(print_places){print("place_names", place_names);}
+// place ID '2516530' = Manchester, NH
+// place ID '2507000' = Boston, MA
+var test_list = ee.List(['2507000']);
+
+// construct dictionary of place names
+var place_dict = ee.Dictionary.fromLists(place_names, ee.List.repeat(0, priority_places_health.aggregate_array('p_GEOID').distinct().length()));
+
+var place_collection = ee.Dictionary();
+
+// mapped over featurecollection
+// given a metro area name and a feature, returns the input feature if its value for metro_name matches the 
+// given input metro name, and returns null otherwise
+var filterPlaces = function(this_place_name){
+  var wrap = function(feature){
+    return ee.Algorithms.If(ee.String(this_place_name).match(feature.getString('p_GEOID')).size().gt(0), feature, null);
+  };
+  return wrap;
+};
+
+// mapped over dictionary of metro names
+// for each name, maps another function over the input feature collection and selects features to put into collection for each name
+var addPlaces = function(key, value){
+  var collection = priority_places_health.map(filterPlaces(key), true);
+  collection = collection.set({place_id: key});
+  // add featurecollection to dictionary
+  return collection;
+};
+
+// the same as above, but mapped over list of metro names so the whole thing can be converted to a featurecollection
+// for each name, maps another function over the input feature collection and selects features to put into collection for each name
+var addPlacesList = function(element){
+  var collection = priority_places_health.map(filterPlaces(element), true);
+  collection = collection.set({place_id: element});
+  // add featurecollection to list
+  return collection;
+};
+
+place_collection = place_dict.map(addPlaces);
+var place_list = place_names.map(addPlacesList);
+var test_places = test_list.map(addPlacesList);
+if(print_places){
+  print("place list", place_list);
+  print("test list", test_places.get(0));
+}
+
+
+
+// this structure is leftover from when I was trying to automate the analysis for many regions - it could be restructured
+// differently in this context in order to make the code more readable
+
+// input: feature collection representing a single metropolitan area with census data and health indicators
+// output: feature collection with equity scores for each block group
+var placeAnalysis = function(feature_collection){
+  // Preprocessing and image classification
+  var study_area = ee.FeatureCollection(feature_collection).geometry();
+  // print("image size", study_area.area());//.bounds(); // get study area from bounding box of input feature collection
+  var composite_image = modules.preprocess(study_area);
+
+  // Classify the statistics based image - in the final code trainingPartition should be something like a static class member
+  var classified = modules.addClass(composite_image, trainingPartition);
+  // Remap supervised classification to boolean image - green vs else
+  var green = classified.remap([1,2,3,4,5,6], [1,0,0,0,0,0]);
+
+  var priority_lst = modules.addLST(feature_collection);
+  // Census analysis
+  // calculate priority indicators from raw data
+  var priority_census = priority_lst.map(modules.addLowIncomePct).map(modules.addNonWhitePct).map(modules.addUnemploymentPct).map(modules.addDepRatio);
+  
+  // calculate tree cover area
+  // input: boolean classified tree cover, where 1 = tree, 0 = other
+  var tree_cover = green.reduceRegions({
+    collection: priority_census,
+    reducer: ee.Reducer.sum(),
+    scale: 4, // scale of 4 runs reasonably
+    crs: 'EPSG:32110',   // specify projection as NAD83/New Hampshire - need to set as object member to adjust for different regions
+    tileScale: 4 // tileScale of 4 with scale of 2 runs, but very slowly
+  });
+
+  var tree_gap = tree_cover.map(modules.setGap);
+  // print("tree_gap", tree_gap);
+
+  // calculate max and min citywide (the whole feature collection) for each indicator
+  var gap_max = tree_gap.aggregate_max('gap');
+  gap_max = ee.Algorithms.If(ee.Number(gap_max).lt(0), 0.0, gap_max);
+  var dep_max = tree_gap.aggregate_max('dep_ratio');
+  var dep_min = tree_gap.aggregate_min('dep_ratio');
+  var unemployment_max = tree_gap.aggregate_max('unemployed_pct');
+  var unemployment_min = tree_gap.aggregate_min('unemployed_pct');
+  var nonwhite_max = tree_gap.aggregate_max('nonwhite');
+  var nonwhite_min = tree_gap.aggregate_min('nonwhite');
+  var low_income_max = tree_gap.aggregate_max('low_income');
+  var low_income_min = tree_gap.aggregate_min('low_income');
+  
+  var phys_max = tree_gap.aggregate_max('phys_hlth');
+  var phys_min = tree_gap.aggregate_min('phys_hlth');
+  var ment_max = tree_gap.aggregate_max('ment_hlth');
+  var ment_min = tree_gap.aggregate_min('ment_hlth');
+  var asthma_max = tree_gap.aggregate_max('asthma');
+  var asthma_min = tree_gap.aggregate_min('asthma');
+  var chd_max = tree_gap.aggregate_max('chd');
+  var chd_min = tree_gap.aggregate_min('chd');
+  var lst_max = tree_gap.aggregate_max('mean');
+  var lst_min = tree_gap.aggregate_min('mean');
+
+  
+  // input: feature with all indicators and canopy gap calcuated
+  // output: final tree equity score
+  // this function is defined within the analysis function so that it has access to the max and min values defined above
+  var equityScore = function(feature){
+    // normalize gap score
+    var gap_norm = (feature.getNumber('gap').divide(gap_max));//.multiply(100);
+  
+    // normalize health indicators
+    var phys_norm = modules.normalize(feature.getNumber('phys_hlth'), phys_min, phys_max);
+    var ment_norm = modules.normalize(feature.getNumber('ment_hlth'), ment_min, ment_max);
+    var asthma_norm = modules.normalize(feature.getNumber('asthma'), asthma_min, asthma_max);
+    var chd_norm = modules.normalize(feature.getNumber('chd'), chd_min, chd_max);
+    // average together to make composite health score
+    var health_norm = phys_norm.add(ment_norm).add(asthma_norm).add(chd_norm).divide(4);
+    
+    // normalize LST - this method is not specified in TES methods documentation, using it is just a guess based on the other indicators
+    var lst_norm = modules.normalize(feature.getNumber('mean'), lst_min, lst_max);
+
+    // normalize priority indicators
+    var dep_norm = modules.normalize(feature.getNumber('dep_ratio'), dep_min, dep_max);
+    var unemployment_norm = modules.normalize(feature.getNumber('unemployed_pct'), unemployment_min, unemployment_max);
+    var nonwhite_norm = modules.normalize(feature.getNumber('nonwhite'), nonwhite_min, nonwhite_max);
+    var low_income_norm = modules.normalize(feature.getNumber('low_income'), low_income_min, low_income_max);
+    // combine priority indicators and gap score
+    var priority = dep_norm.add(unemployment_norm).add(nonwhite_norm).add(low_income_norm).add(health_norm).add(lst_norm).divide(6);
+    var tes = ee.Number(100).multiply(ee.Number(1).subtract(gap_norm.multiply(priority)));
+    
+    return feature.set({health_norm: health_norm, priority: priority, tes: tes});
+  };
+  tree_gap = tree_gap.set({place_id: ee.FeatureCollection(feature_collection).getString('place_id')});
+  return tree_gap.map(equityScore);
+
+};
+
+// analysis function adjusted to process NYC landcover data
+// input: feature collection representing a single metropolitan area with census data and health indicators
+// output: feature collection with equity scores for each block group
+var nycAnalysis = function(feature_collection, landcover){
+  // Preprocessing and image classification
+  var study_area = ee.FeatureCollection(feature_collection).geometry();
+
+  // Remap supervised classification to boolean image - green vs else
+  var green = landcover.remap([1,2,3,4,5,6,7], [1,0,0,0,0,0,0]);
+
+  // calculate tree cover area
+  // input: boolean classified tree cover, where 1 = tree, 0 = other
+  var tree_cover = green.reduceRegions({
+    collection: feature_collection,
+    reducer: ee.Reducer.sum(),
+    scale: 4, // scale of 4 runs reasonably
+    crs: 'EPSG:2263',   // specify projection as NY State plane Long Island
+    tileScale: 4 // tileScale of 4 with scale of 2 runs, but very slowly
+  });
+
+  var tree_gap = tree_cover.map(modules.setGap);
+  // print("tree_gap", tree_gap);
+  
+  var priority_lst_gap = modules.addLST(tree_gap);
+  // Census analysis
+  // calculate priority indicators from raw data
+  var priority_census_gap = priority_lst_gap.map(modules.addLowIncomePct).map(modules.addNonWhitePct).map(modules.addUnemploymentPct).map(modules.addDepRatio);
+  // print("priority_census", priority_census);
+
+  // calculate max and min citywide (the whole feature collection) for each indicator
+  var gap_max = priority_census_gap.aggregate_max('gap');
+  gap_max = ee.Algorithms.If(ee.Number(gap_max).lt(0), 0.0, gap_max);
+  var dep_max = priority_census_gap.aggregate_max('dep_ratio');
+  var dep_min = priority_census_gap.aggregate_min('dep_ratio');
+  var unemployment_max = priority_census_gap.aggregate_max('unemployed_pct');
+  var unemployment_min = priority_census_gap.aggregate_min('unemployed_pct');
+  var nonwhite_max = priority_census_gap.aggregate_max('nonwhite');
+  var nonwhite_min = priority_census_gap.aggregate_min('nonwhite');
+  var low_income_max = priority_census_gap.aggregate_max('low_income');
+  var low_income_min = priority_census_gap.aggregate_min('low_income');
+  
+  var phys_max = priority_census_gap.aggregate_max('phys_hlth');
+  var phys_min = priority_census_gap.aggregate_min('phys_hlth');
+  var ment_max = priority_census_gap.aggregate_max('ment_hlth');
+  var ment_min = priority_census_gap.aggregate_min('ment_hlth');
+  var asthma_max = priority_census_gap.aggregate_max('asthma');
+  var asthma_min = priority_census_gap.aggregate_min('asthma');
+  var chd_max = priority_census_gap.aggregate_max('chd');
+  var chd_min = priority_census_gap.aggregate_min('chd');
+  var lst_max = priority_census_gap.aggregate_max('mean');
+  var lst_min = priority_census_gap.aggregate_min('mean');
+  
+  // input: feature with all indicators and canopy gap calcuated
+  // output: final tree equity score
+  // this function is defined within the analysis function so that it has access to the max and min values defined above
+  var equityScore = function(feature){
+    // normalize gap score
+    var gap_norm = (feature.getNumber('gap').divide(gap_max));//.multiply(100);
+  
+    // normalize health indicators
+    var phys_norm = modules.normalize(feature.getNumber('phys_hlth'), phys_min, phys_max);
+    var ment_norm = modules.normalize(feature.getNumber('ment_hlth'), ment_min, ment_max);
+    var asthma_norm = modules.normalize(feature.getNumber('asthma'), asthma_min, asthma_max);
+    var chd_norm = modules.normalize(feature.getNumber('chd'), chd_min, chd_max);
+    // average together to make composite health score
+    var health_norm = phys_norm.add(ment_norm).add(asthma_norm).add(chd_norm).divide(4);
+    
+    // normalize LST - this method is not specified in TES methods documentation, using it is just a guess based on the other indicators
+    var lst_norm = modules.normalize(feature.getNumber('mean'), lst_min, lst_max);
+    // normalize priority indicators
+    var dep_norm = modules.normalize(feature.getNumber('dep_ratio'), dep_min, dep_max);
+    var unemployment_norm = modules.normalize(feature.getNumber('unemployed_pct'), unemployment_min, unemployment_max);
+    var nonwhite_norm = modules.normalize(feature.getNumber('nonwhite'), nonwhite_min, nonwhite_max);
+    var low_income_norm = modules.normalize(feature.getNumber('low_income'), low_income_min, low_income_max);
+    // combine priority indicators and gap score
+    var priority = dep_norm.add(unemployment_norm).add(nonwhite_norm).add(low_income_norm).add(health_norm).add(lst_norm).divide(6);
+    var tes = ee.Number(100).multiply(ee.Number(1).subtract(gap_norm.multiply(priority)));
+    
+    return feature.set({health_norm: health_norm, lst_norm: lst_norm, priority: priority, tes: tes});
+  };
+  //priority_census_gap = priority_census_gap.set({place_id: ee.FeatureCollection(feature_collection).getString('place_id')});
+  return priority_census_gap.map(equityScore);
+
+};
+
+
+//var tes_manch2 = placeAnalysis(manch);
+// var tes_bos = placeAnalysis(place_collection.get("2507000"));
+// print("tes_bos", tes_bos);
+
+var test_tes_places = ee.FeatureCollection(test_places.map(placeAnalysis)).flatten();
+// print("test_tes_places", test_tes_places);
+
+// // Export data from Boston as a sample
+// Export.table.toAsset({
+//   collection: test_tes_places,
+//   description: 'bos_sample_results',
+//   assetId: 'urban_greenspace/bos_sample_results'
+// });
+
+var nyc_health_census = modules.joinHealthData(modules.filterByPop(nyc_blockgrp_indicators), nyc_health, false);
+
+var small_nyc_test = nyc_health_census.filterBounds(nyc_health_census.first().geometry());
+print(small_nyc_test);
+
+print(nycAnalysis(small_nyc_test, nyc_landcover));
+// Export data from NYC
+Export.table.toAsset({
+  collection: nycAnalysis(nyc_health_census, nyc_landcover),
+  description: 'nyc_blockgrp_results',
+  assetId: 'urban_greenspace/nyc_blockgrp_results'
+});
