@@ -1,4 +1,4 @@
-# Exploring the nuance behind Tree Equity Score
+# Exploring the Nuance Behind Tree Equity Score
 ## Sam Marshall
 
 Earth Engine App: [The Nuance and Complexity Behind Tree Equity Score](https://gsmarshall.users.earthengine.app/view/the-nuance-and-complexity-behind-tree-equity-score)
