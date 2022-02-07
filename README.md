@@ -1,7 +1,7 @@
 # Exploring the nuance behind Tree Equity Score
 ## Sam Marshall
 
-Earth Engine App: [The Nuance and Complexity Behind Tree Equit Score]()
+Earth Engine App: [The Nuance and Complexity Behind Tree Equity Score](https://gsmarshall.users.earthengine.app/view/the-nuance-and-complexity-behind-tree-equity-score)
 
 This Earth Engine App was created as an offshoot of an [earlier effort](https://github.com/gsmarshall/urban_greenspace) to reproduce the Tree Equity Score analysis of urban tree cover in New England. [Tree Equity Score](https://treeequityscore.org/) is a project created by the nonprofit American Forests that aims to determine the relative need for tree planting in each neighborhood in every city in the U.S. It has many strengths, but generally lacks nuance. This app examines the complex relationships between four of the components of Tree Equity Score (canopy cover, land surface temperature, nonwhite population, and low income population) in New York City, seeking to show the ways in which different on-the-ground realities could be represented as the same by the analysis.
 
